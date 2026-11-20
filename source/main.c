@@ -5,12 +5,13 @@
 #include <string.h>
 #include <stdio.h>
 #include "core.h"
+#include "songs.h"
+#include "control.h"
 
 u32 __nx_applet_type = AppletType_None;
 size_t __nx_heap_size = 0x6800000; // bounded track + runtime + audio buffers
 void __appInit(void) {}
 void __appExit(void) {}
-#define MAX_TRACK (96u*1024u*1024u)
 #define BLOCK 4096u // 1024 stereo frames, about 21 ms
 static unsigned char pcm[2][BLOCK] __attribute__((aligned(4096)));
 static AudioOutBuffer buffers[2];
@@ -25,53 +26,69 @@ static Result initialize_version(void) {
     return rc;
 }
 static Result bad_input(void) { return MAKERESULT(Module_Libnx, LibnxError_BadInput); }
-// Pick one visible WAV deterministically without mounting a writable devoptab.
-static Result find_track(FsFileSystem *sd,char path[FS_MAX_PATH]) {
-    static const char directory[]="/switch/kai-menu-music";
-    FsDir dir;
-    Result rc=fsFsOpenDirectory(sd,directory,FsDirOpenMode_ReadFiles,&dir);
-    if (R_FAILED(rc)) return rc;
-    char selected[FS_MAX_PATH]={0};
-    for (;;) {
-        FsDirectoryEntry entry;
-        s64 count=0;
-        rc=fsDirRead(&dir,&count,1,&entry);
-        if (R_FAILED(rc) || count==0) break;
-        if (count!=1 || !memchr(entry.name,0,sizeof entry.name)) { rc=bad_input(); break; }
-        if (!wave_filename(entry.name)) continue;
-        if (strlen(directory)+1+strlen(entry.name)>=FS_MAX_PATH) continue;
-        if (!selected[0] || strcmp(entry.name,selected)<0) strcpy(selected,entry.name);
-    }
-    fsDirClose(&dir);
-    if (R_SUCCEEDED(rc) && !selected[0]) return MAKERESULT(Module_Libnx,LibnxError_NotFound);
-    if (R_SUCCEEDED(rc)) snprintf(path,FS_MAX_PATH,"%s/%s",directory,selected);
-    return rc;
+typedef struct { Mutex lock; MusicState state; } MusicControl;
+static MusicControl control={.state={.version=1}};
+
+static Result control_command(u32 command,const void *input,size_t input_size,void *output,size_t *output_size,void *context) {
+    (void)input; (void)input_size; (void)context;
+    mutexLock(&control.lock);
+    if (command==MusicCommand_State) {
+        memcpy(output,&control.state,sizeof control.state); *output_size=sizeof control.state;
+    } else if (command==MusicCommand_Reload) {
+        if (++control.state.requested==0) ++control.state.requested;
+        memcpy(output,&control.state.requested,sizeof control.state.requested); *output_size=sizeof control.state.requested;
+    } else { mutexUnlock(&control.lock); return bad_input(); }
+    mutexUnlock(&control.lock); return 0;
 }
-// No devoptab mount, no stdio, no write-capable file handle.
-static Result load_track(unsigned char **bytes, Wave *wave) {
-    FsFileSystem sd;
-    FsFile file;
+static void completed(u32 generation,Result result) {
+    mutexLock(&control.lock); control.state.completed=generation; control.state.result=result; mutexUnlock(&control.lock);
+}
+static u32 requested(void) {
+    mutexLock(&control.lock); u32 result=control.state.requested; mutexUnlock(&control.lock); return result;
+}
+// The plugin opens only read handles; the selector app owns the SD setting.
+static Result load_track(const char *requested_name,unsigned char **bytes,Wave *wave,char active_name[FS_MAX_PATH]) {
+    *bytes=NULL; *wave=(Wave){0};
+    FsFileSystem sd; FsFile file;
     Result rc=fsOpenSdCardFileSystem(&sd);
     if (R_FAILED(rc)) return rc;
     char path[FS_MAX_PATH];
-    rc=find_track(&sd,path);
+    rc=song_resolve(&sd,requested_name,path,active_name);
     if (R_SUCCEEDED(rc)) rc=fsFsOpenFile(&sd,path,FsOpenMode_Read,&file);
     if (R_SUCCEEDED(rc)) {
         s64 size=0;
         rc=fsFileGetSize(&file,&size);
-        if (R_SUCCEEDED(rc) && (size<12 || size>MAX_TRACK)) rc=bad_input();
+        if (R_SUCCEEDED(rc) && (size<12 || size>MAX_TRACK_BYTES)) rc=bad_input();
         if (R_SUCCEEDED(rc)) {
             *bytes=malloc((size_t)size);
             if (!*bytes) rc=MAKERESULT(Module_Libnx,LibnxError_OutOfMemory);
         }
         if (R_SUCCEEDED(rc)) {
-            u64 got=0;
-            rc=fsFileRead(&file,0,*bytes,(u64)size,FsReadOption_None,&got);
+            u64 got=0; rc=fsFileRead(&file,0,*bytes,(u64)size,FsReadOption_None,&got);
             if (R_SUCCEEDED(rc) && (got!=(u64)size || !wave_parse(*bytes,(size_t)size,wave))) rc=bad_input();
         }
         fsFileClose(&file);
     }
     fsFsClose(&sd);
+    if (R_FAILED(rc)) { free(*bytes); *bytes=NULL; *wave=(Wave){0}; }
+    return rc;
+}
+static uint32_t shuffle_random(void *context) { (void)context; return (uint32_t)randomGet64(); }
+static Result choose_playback(bool *shuffle,const char *previous,char name[FS_MAX_PATH]) {
+    FsFileSystem sd; Result rc=fsOpenSdCardFileSystem(&sd);
+    if (R_FAILED(rc)) return rc;
+    song_read_shuffle(&sd,shuffle);
+    char path[FS_MAX_PATH]; Wave wave;
+    if (*shuffle) rc=song_choose_shuffle(&sd,previous,shuffle_random,NULL,name);
+    else rc=song_resolve(&sd,NULL,path,name);
+    if (R_SUCCEEDED(rc)) rc=song_validate(&sd,name,&wave);
+    fsFsClose(&sd); return rc;
+}
+static Result audio_initialize(void) {
+    Result rc=audoutInitialize();
+    if (R_SUCCEEDED(rc) && (audoutGetSampleRate()!=48000 || audoutGetChannelCount()!=2 || audoutGetPcmFormat()!=PcmFormat_Int16)) {
+        audoutExit(); rc=bad_input();
+    }
     return rc;
 }
 // Read the recent raw event window; any error or unrecognized state is silent.
@@ -90,54 +107,73 @@ static bool home_focused(void) {
     }
     return home;
 }
-static void fill(unsigned i, const unsigned char *data, size_t size, size_t *cursor) {
-    size_t done=0;
-    while (done<BLOCK) {
-        size_t n=size-*cursor;
-        if (n>BLOCK-done) n=BLOCK-done;
-        memcpy(pcm[i]+done,data+*cursor,n);
-        // Half volume, entirely in the owned PCM buffer.
-        done+=n; *cursor=(*cursor+n)%size;
-    }
-    for (size_t p=0;p<BLOCK;p+=2) {
+static size_t fill(unsigned i,const unsigned char *data,size_t size,size_t *cursor,bool loop) {
+    size_t done=wave_copy_block(pcm[i],BLOCK,data,size,cursor,loop);
+    for (size_t p=0;p<done;p+=2) {
         int16_t sample;
         memcpy(&sample,pcm[i]+p,2); sample/=2; memcpy(pcm[i]+p,&sample,2);
     }
-    armDCacheFlush(pcm[i],BLOCK);
+    armDCacheFlush(pcm[i],BLOCK); return done;
 }
 int main(void) {
-    Handle ready=INVALID_HANDLE;
-    Result rc=pluginRuntimeInitialize(&ready);
+    Handle ready=INVALID_HANDLE,session=INVALID_HANDLE;
+    PluginService service={0};
+    Result rc=pluginRuntimeInitializeWithService(&ready,&session);
     if (R_FAILED(rc)) return rc;
-    unsigned char *track=NULL;
-    Wave wave={0};
-    bool fs=false, pdm=false, audio=false, started=false;
-    rc=svcSignalEvent(ready); // acknowledge runtime promptly; loading can take time
+    rc=pluginServiceStart(&service,session,control_command,NULL);
+    if (R_SUCCEEDED(rc)) rc=svcSignalEvent(ready);
     if (R_SUCCEEDED(rc)) rc=initialize_version();
-    if (R_SUCCEEDED(rc)) { rc=fsInitialize(); fs=R_SUCCEEDED(rc); }
-    if (R_SUCCEEDED(rc)) rc=load_track(&track,&wave);
-    if (fs) { fsExit(); fs=false; } // track stays in RAM for the rest of the boot
+    bool pdm=false,audio=false,started=false,shuffle=false,advance=false;
     if (R_SUCCEEDED(rc)) { rc=pdmqryInitialize(); pdm=R_SUCCEEDED(rc); }
-    if (R_SUCCEEDED(rc)) { rc=audoutInitialize(); audio=R_SUCCEEDED(rc); }
-    if (R_SUCCEEDED(rc) && (audoutGetSampleRate()!=48000 || audoutGetChannelCount()!=2 ||
-        audoutGetPcmFormat()!=PcmFormat_Int16)) rc=bad_input();
-    size_t cursor=0;
-    bool queued[2]={false,false};
+    unsigned char *track=NULL; Wave wave={0}; char active_name[FS_MAX_PATH]={0};
+    if (R_SUCCEEDED(rc)) {
+        Result load=fsInitialize();
+        if (R_SUCCEEDED(load)) {
+            char initial[FS_MAX_PATH]; load=choose_playback(&shuffle,NULL,initial);
+            if (R_SUCCEEDED(load)) load=load_track(initial,&track,&wave,active_name);
+            fsExit();
+        }
+        if (R_SUCCEEDED(load)) { load=audio_initialize(); audio=R_SUCCEEDED(load); }
+        completed(0,load); // Missing music stays idle; the selector can load it later.
+    }
+    size_t cursor=0; bool queued[2]={false,false},home=false;
+    unsigned focus_ticks=0; u32 generation=0;
     for (unsigned i=0;i<2;i++) buffers[i]=(AudioOutBuffer){.buffer=pcm[i],.buffer_size=BLOCK,.data_size=BLOCK};
-    bool home=false;
-    unsigned focus_ticks=0;
     while (R_SUCCEEDED(rc)) {
+        u32 next=requested();
+        if (next!=generation || advance) {
+            bool user_request=next!=generation;
+            Result load=fsInitialize();
+            if (R_SUCCEEDED(load)) {
+                bool next_shuffle=shuffle; char chosen[FS_MAX_PATH];
+                load=choose_playback(&next_shuffle,user_request ? NULL : active_name,chosen);
+                if (R_SUCCEEDED(load)) {
+                    char previous[FS_MAX_PATH]; strcpy(previous,active_name);
+                    if (audio) { if (started) audoutStopAudioOut(); audoutExit(); }
+                    audio=started=false; free(track); track=NULL;
+                    load=load_track(chosen,&track,&wave,active_name);
+                    if (R_FAILED(load) && previous[0]) load_track(previous,&track,&wave,active_name);
+                    if (track) {
+                        Result ar=audio_initialize(); audio=R_SUCCEEDED(ar);
+                        if (R_SUCCEEDED(load)) load=ar;
+                    }
+                    if (R_SUCCEEDED(load)) shuffle=next_shuffle;
+                    cursor=0; queued[0]=queued[1]=false; focus_ticks=0;
+                }
+                fsExit();
+            }
+            if (user_request) { generation=next; completed(generation,load); }
+            else if (R_FAILED(load)) { shuffle=false; cursor=0; }
+            advance=false;
+        }
+        if (!track || !audio) { svcSleepThread(50000000); continue; }
         if (!focus_ticks) { home=home_focused(); focus_ticks=10; }
         --focus_ticks;
         if (!home) {
             if (started) { rc=audoutStopAudioOut(); started=false; }
-            // Stopped buffers remain owned by audout; never overwrite them.
-            focus_ticks=0;
-            svcSleepThread(50000000);
-            continue;
+            focus_ticks=0; svcSleepThread(50000000); continue;
         }
-        AudioOutBuffer *released=NULL;
-        u32 count=0;
+        AudioOutBuffer *released=NULL; u32 count=0;
         do {
             rc=audoutGetReleasedAudioOutBuffer(&released,&count);
             if (R_FAILED(rc) || !count) break;
@@ -146,9 +182,12 @@ int main(void) {
             else { rc=bad_input(); break; }
         } while (count);
         if (R_FAILED(rc)) break;
+        if (shuffle && cursor>=wave.size && !queued[0] && !queued[1]) { advance=true; continue; }
         for (unsigned i=0;i<2 && R_SUCCEEDED(rc);i++) {
             if (queued[i]) continue;
-            fill(i,track+wave.offset,wave.size,&cursor);
+            size_t length=fill(i,track+wave.offset,wave.size,&cursor,!shuffle);
+            if (!length) continue;
+            buffers[i].data_size=length;
             rc=audoutAppendAudioOutBuffer(&buffers[i]);
             if (R_SUCCEEDED(rc)) queued[i]=true;
         }
@@ -157,7 +196,6 @@ int main(void) {
     }
     if (audio) { if (started) audoutStopAudioOut(); audoutExit(); }
     if (pdm) pdmqryExit();
-    free(track);
-    pluginRuntimeExit();
-    return rc;
+    if (service.started) pluginServiceStop(&service);
+    free(track); pluginRuntimeExit(); return rc;
 }

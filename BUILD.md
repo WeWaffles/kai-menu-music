@@ -1,44 +1,45 @@
 # Build and install
 
-Use the official [ounce-devkit](https://github.com/ouncebrew/ounce-devkit),
-set `DEVKITPRO`, and run `make`. The output is `kai-menu-music.nso`.
-The tested toolkit uses libounce and libkaihen packages `20261117.1-1`.
+Build with [ounce-devkit](https://github.com/ouncebrew/ounce-devkit), libounce and libkaihen `20261117.1-1`:
 
-Install the NSO at `/kaihen/plugins/kai-menu-music.nso` on an already working
-kaiHEN SD card, replacing the previous plugin. Restart kaiHEN after replacing it.
-Do not keep multiple copies of the NSO under different names in plugins.
+```sh
+make
+```
 
-Supply one WAV in `/switch/kai-menu-music/`. Any visible filename ending in
-`.wav` (case-insensitive) is accepted. If multiple WAVs exist, the first by
-bytewise filename order is selected; subdirectories and hidden files are ignored.
-Use RIFF/WAVE uncompressed PCM signed 16-bit stereo, 48000 Hz, up to 96 MiB.
-Example conversion on a computer:
+Install:
+
+| File | SD path |
+| --- | --- |
+| `kai-menu-music.nso` | `/kaihen/plugins/kai-menu-music.nso` |
+| `kai-menu-music-selector.nro` | `/switch/kai-menu-music-selector/kai-menu-music-selector.nro` |
+
+Replace the existing plugin, restart kaiHEN, and open **Menu Music** from the homebrew menu.
+
+| Control | Action |
+| --- | --- |
+| Up/Down | Browse |
+| A | Select a song and turn shuffle off |
+| Y | Toggle shuffle |
+| X | Refresh |
+| B / + | Exit |
+
+Return to HOME to listen. Selection and shuffle settings are saved on SD in `/switch/kai-menu-music/selected.txt` and `/switch/kai-menu-music/shuffle.txt`. Shuffle skips unsupported files and avoids immediate repeats when another valid song exists.
+
+Put WAV files in `/switch/kai-menu-music/`. Format: RIFF/WAVE, PCM signed 16-bit, stereo, 48000 Hz, up to 96 MiB.
 
 ```sh
 ffmpeg -i your-song.mp3 -ar 48000 -ac 2 -c:a pcm_s16le yourfile.wav
 ```
 
-The complete WAV loads into RAM, then its SD handles close. HOME activity
-controls playback. Volume is fixed at half amplitude. There is no overlay,
-settings file, network access, or plugin-owned persistent write. The code
-opens only the SD filesystem, directory and music file for reading, and
-queries firmware, audio and PDM services. This describes the plugin's requests;
-Nintendo system services and kaiHEN have their own behavior.
+The plugin loads one track into RAM and plays on HOME. The selector can request a live reload. Without a saved choice, the first visible WAV in filename order is used. Volume is fixed at half amplitude. No NAND writes, network access, or overlay.
 
-The original fixed-path audio-only version was reported working on a user's
-Switch 2. This release restores that implementation and adds filename discovery;
-the filename discovery change is cross-compiled and host-tested, but awaits a
-console test. The failed experimental overlay is not included.
-
-Host checks:
+Host tests:
 
 ```sh
-clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
-  source/core.c tests/test_core.c -o /tmp/kai-menu-core-test
-/tmp/kai-menu-core-test
+clang -std=gnu11 -Wall -Wextra -Werror -fsanitize=address,undefined source/core.c tests/test_core.c -o /tmp/menu-core-test
+/tmp/menu-core-test
+clang -std=gnu11 -Wall -Wextra -Werror -fsanitize=address,undefined -I tests/mock source/core.c source/songs.c tests/test_songs.c -o /tmp/menu-songs-test
+/tmp/menu-songs-test
 ```
 
-Project source is MIT licensed. The Makefile is adapted from ounce-devkit's
-MIT plugin example. libkaihen and libounce/libnx use ISC licenses; notices are
-in `licenses/`. No music, firmware, Nintendo SDK or other console assets are
-included in the repository or release.
+Source is MIT licensed. Dependency notices are in `licenses/`. Music and console assets are not included.

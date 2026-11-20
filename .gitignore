@@ -1,4 +1,5 @@
 build/
 *.nso
+*.nro
 *.zip
 .DS_Store
