@@ -7,4 +7,3 @@ Command for converting your file `ffmpeg -i "input.mp3" -ar 48000 -ac 2 -c:a pcm
 Put the NRO in `/switch/kai-menu-music-selector/`
 Put the NSO in `/kaihen/plugins/`
 
-Only works on ExFat cards, if you want fat32 and know how to fix it please make a pull request
