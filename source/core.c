@@ -44,12 +44,60 @@ bool wave_parse(const uint8_t *b,size_t n,Wave *w) {
     if (!b) return false;
     MemoryWave memory={b,n}; return wave_probe(memory_read,&memory,n,w);
 }
-bool focus_step(bool home, unsigned kind, unsigned applet, unsigned event) {
-    if (kind==2 || kind==4) return false; // power or log initialization
-    if (kind!=0) return home;
-    if (event==2) return applet==3; // explicit SystemAppletMenu focus only
-    if (applet==3 && (event==1 || event==3 || event==4 || event==5 || event==6)) return false;
-    return home;
+// Applet ids follow libnx AppletId; PDM event types follow PdmAppletEventType.
+enum { APPLET_HOME=0x03, APPLET_LIBRARY_FIRST=0x0A };
+enum { EVENT_EXIT=1, EVENT_IN_FOCUS=2, EVENT_OUT_OF_FOCUS=3, EVENT_OUT_OF_FOCUS4=4, EVENT_EXIT5=5, EVENT_EXIT6=6 };
+const MusicMenu music_menus[MENU_COUNT]={
+    {"home","HOME Menu",APPLET_HOME},
+    {"settings","System Settings",0x16},   // LibraryAppletSet
+    // Switch 2 GameShare applet 0x01000024 (libounce); PDM keeps only the low byte. Unverified.
+    {"gameshare","GameShare",0x24},
+    {"profile","User Page",0x1A},          // LibraryAppletMyPage
+    {"controllers","Controllers",0x0C},    // LibraryAppletController
+    {"album","Album",0x15},                // LibraryAppletPhotoViewer
+};
+int menu_from_applet(unsigned applet) {
+    for (int i=0;i<MENU_COUNT;i++) if (music_menus[i].applet==applet) return i;
+    return MENU_NONE;
+}
+static bool library_applet(unsigned applet) { return applet>=APPLET_LIBRARY_FIRST; }
+static int stack_find(const MenuFocus *f,unsigned applet) {
+    for (unsigned i=0;i<f->depth;i++) if (f->stack[i]==applet) return (int)i;
+    return -1;
+}
+void menu_focus_step(MenuFocus *f,unsigned kind,unsigned applet,unsigned event) {
+    if (!f) return;
+    if (kind==2 || kind==4) { *f=(MenuFocus){0}; return; } // power or log initialization
+    if (kind!=0) return;
+    if (event==EVENT_IN_FOCUS) {
+        if (applet==APPLET_HOME) { f->home=true; f->depth=0; }
+        else if (library_applet(applet)) {
+            int at=stack_find(f,applet);
+            if (at>=0) f->depth=(unsigned)at+1;
+            else if (f->depth<sizeof f->stack/sizeof f->stack[0]) f->stack[f->depth++]=applet;
+        } else { f->home=false; f->depth=0; } // a game or other applet took over
+        f->current=applet; return;
+    }
+    bool exit=event==EVENT_EXIT || event==EVENT_EXIT5 || event==EVENT_EXIT6;
+    bool out=event==EVENT_OUT_OF_FOCUS || event==EVENT_OUT_OF_FOCUS4;
+    if (exit && library_applet(applet)) {
+        int at=stack_find(f,applet);
+        if (at>=0) f->depth=(unsigned)at;
+        // Closing a menu returns to whatever opened it.
+        if (applet==f->current) f->current=f->depth ? f->stack[f->depth-1] : f->home ? APPLET_HOME : 0;
+        return;
+    }
+    if ((exit || out) && applet==f->current) {
+        f->current=0;
+        if (exit && applet==APPLET_HOME) f->home=false;
+    }
+}
+int menu_focus_menu(const MenuFocus *f) {
+    if (!f || !f->current) return MENU_NONE;
+    if (f->current==APPLET_HOME) return f->home ? MENU_HOME : MENU_NONE;
+    // A library applet only gets music when HOME opened it, never from a game.
+    if (!f->home || stack_find(f,f->current)<0) return MENU_NONE;
+    return menu_from_applet(f->current);
 }
 
 bool wave_filename(const char *name) {

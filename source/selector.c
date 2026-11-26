@@ -13,29 +13,31 @@ size_t __nx_heap_size=0x2000000;
 static char songs[MAX_SONGS][FS_MAX_PATH];
 static size_t count,cursor;
 static bool shuffle,pending_toggle;
+static int menu=MENU_HOME; // whose playlist is shown; L/R switches
 static int screen_columns=80,screen_rows=45;
 static char selected[FS_MAX_PATH],pending_name[FS_MAX_PATH];
 static char message[128]="Choose a WAV, then press A.";
 
 static int compare_names(const void *left,const void *right) { return strcmp(left,right); }
 static Result refresh(FsFileSystem *sd) {
-    song_read_shuffle(sd,&shuffle);
+    const char *folder=song_menu_directory(menu);
+    song_read_shuffle(sd,folder,&shuffle);
     count=0; FsDir dir;
-    Result rc=fsFsOpenDirectory(sd,MUSIC_DIRECTORY,FsDirOpenMode_ReadFiles,&dir);
+    Result rc=fsFsOpenDirectory(sd,folder,FsDirOpenMode_ReadFiles,&dir);
     if (R_FAILED(rc)) return rc;
     while (count<MAX_SONGS) {
         FsDirectoryEntry entry; s64 got=0;
         rc=fsDirRead(&dir,&got,1,&entry);
         if (R_FAILED(rc) || !got) break;
         if (got!=1 || !memchr(entry.name,0,sizeof entry.name) || !wave_filename(entry.name)) continue;
-        if (strlen(MUSIC_DIRECTORY)+1+strlen(entry.name)>=FS_MAX_PATH) continue;
+        if (strlen(folder)+1+strlen(entry.name)>=FS_MAX_PATH) continue;
         strcpy(songs[count++],entry.name);
     }
     fsDirClose(&dir);
     qsort(songs,count,sizeof songs[0],compare_names);
     if (cursor>=count) cursor=count ? count-1 : 0;
     char path[FS_MAX_PATH];
-    if (R_FAILED(song_resolve(sd,NULL,path,selected))) selected[0]=0;
+    if (R_FAILED(song_resolve(sd,folder,NULL,path,selected))) selected[0]=0;
     for (size_t i=0;i<count;i++) if (!strcmp(songs[i],selected)) { cursor=i; break; }
     return rc;
 }
@@ -48,7 +50,7 @@ static Result open_plugin(Service *plugin) {
     if (serviceIsActive(&hen)) serviceClose(&hen);
     if (R_SUCCEEDED(rc)) {
         MusicState state={0}; rc=serviceDispatchOut(plugin,MusicCommand_State,state);
-        if (R_SUCCEEDED(rc) && state.version!=1) rc=MAKERESULT(Module_Libnx,LibnxError_BadInput);
+        if (R_SUCCEEDED(rc) && state.version!=MUSIC_CONTROL_VERSION) rc=MAKERESULT(Module_Libnx,LibnxError_BadInput);
         if (R_FAILED(rc)) serviceClose(plugin);
     }
     return rc;
@@ -72,6 +74,8 @@ static void draw(bool waiting) {
         printf("\x1b[0m");
     }
     printf("\x1b[1;36m"); centered_line(top+1,left,width,"MENU MUSIC"); printf("\x1b[0m");
+    char heading[64]; snprintf(heading,sizeof heading,"[L]  < %s >  [R]",music_menus[menu].label);
+    printf("\x1b[1m"); centered_line(top+2,left,width,heading); printf("\x1b[0m");
     move_to(top+3,left+2); printf("Shuffle: %s  [Y]",shuffle ? "ON" : "OFF");
     move_to(top+4,left+2);
     if (shuffle) printf("Playback: random song order");
@@ -86,15 +90,16 @@ static void draw(bool waiting) {
         printf("\x1b[0m");
     }
     if (!count) {
-        move_to(top+6,left+2); printf("No WAV files found.");
-        move_to(top+7,left+2); printf("Add songs to " MUSIC_DIRECTORY "/");
+        move_to(top+6,left+2);
+        printf(menu==MENU_HOME ? "No WAV files found." : "No WAV files here, so HOME Menu music plays.");
+        move_to(top+7,left+2); printf("Add songs to %.*s/",width-18,song_menu_directory(menu));
     }
     if (count) {
         char position[32]; snprintf(position,sizeof position,"%u / %u",(unsigned)(cursor+1),(unsigned)count);
         centered_line(top+visible+7,left,width,position);
     }
     printf("\x1b[36m"); centered_line(top+visible+9,left+2,width-4,waiting ? "Applying..." : message); printf("\x1b[0m");
-    centered_line(top+height+1,left,width,"Up/Down Browse  A Select  Y Shuffle  X Refresh  B/+ Exit");
+    centered_line(top+height+1,left,width,"L/R Menu  Up/Down Browse  A Select  Y Shuffle  X Refresh  B/+ Exit");
 }
 int main(void) {
     PrintConsole *console=consoleInit(NULL);
@@ -109,12 +114,14 @@ int main(void) {
     if (sd_open) {
         // These are SD directories; all game/system content remains untouched.
         fsFsCreateDirectory(&sd,"/switch");
-        fsFsCreateDirectory(&sd,MUSIC_DIRECTORY);
+        // Menu folders start empty; an empty folder means that menu uses HOME's music.
+        for (int i=0;i<MENU_COUNT;i++) fsFsCreateDirectory(&sd,song_menu_directory(i));
         rc=refresh(&sd);
     }
     if (R_FAILED(rc)) snprintf(message,sizeof message,"Could not read the music folder on SD.");
     Service plugin={0}; open_plugin(&plugin);
     bool dirty=true,waiting=false; u32 request=0; unsigned poll_ticks=0;
+    u32 reload_menu=MENU_HOME;
     while (appletMainLoop()) {
         padUpdate(&pad);
         u64 down=padGetButtonsDown(&pad);
@@ -123,16 +130,21 @@ int main(void) {
         if (down&(HidNpadButton_Plus|HidNpadButton_B)) break;
         if (count && (navigation&HidNpadButton_AnyUp)) { cursor=cursor ? cursor-1 : count-1; dirty=true; }
         if (count && (navigation&HidNpadButton_AnyDown)) { cursor=(cursor+1)%count; dirty=true; }
+        if (!waiting && sd_open && (down&(HidNpadButton_L|HidNpadButton_R))) {
+            menu=(menu+(down&HidNpadButton_R ? 1 : MENU_COUNT-1))%MENU_COUNT; cursor=0;
+            refresh(&sd); snprintf(message,sizeof message,"Choose a WAV, then press A."); dirty=true;
+        }
         if (!waiting && sd_open && (down&HidNpadButton_X)) {
             refresh(&sd); snprintf(message,sizeof message,"Song list refreshed."); dirty=true;
         }
         if (!waiting && sd_open && count && (down&HidNpadButton_Y)) {
-            rc=song_save_shuffle(&sd,!shuffle);
+            rc=song_save_shuffle(&sd,song_menu_directory(menu),!shuffle);
             if (R_FAILED(rc)) snprintf(message,sizeof message,"Could not save shuffle mode to SD.");
             else {
                 shuffle=!shuffle; pending_toggle=true; strcpy(pending_name,selected);
+                reload_menu=(u32)menu;
                 if (!serviceIsActive(&plugin)) open_plugin(&plugin);
-                if (serviceIsActive(&plugin)) rc=serviceDispatchOut(&plugin,MusicCommand_Reload,request);
+                if (serviceIsActive(&plugin)) rc=serviceDispatchInOut(&plugin,MusicCommand_Reload,reload_menu,request);
                 else rc=MAKERESULT(Module_Libnx,LibnxError_NotFound);
                 if (R_SUCCEEDED(rc)) { waiting=true; poll_ticks=0; }
                 else snprintf(message,sizeof message,"Mode saved. Restart the Switch to apply.");
@@ -141,18 +153,19 @@ int main(void) {
         }
         if (!waiting && sd_open && count && (down&HidNpadButton_A)) {
             Wave wave;
-            rc=song_validate(&sd,songs[cursor],&wave);
+            rc=song_validate(&sd,song_menu_directory(menu),songs[cursor],&wave);
             if (R_FAILED(rc)) {
                 snprintf(message,sizeof message,"Use PCM16 stereo 48 kHz WAV, under 96 MiB.");
             } else {
-                rc=song_save_selection(&sd,songs[cursor]);
-                if (R_SUCCEEDED(rc)) rc=song_save_shuffle(&sd,false);
+                rc=song_save_selection(&sd,song_menu_directory(menu),songs[cursor]);
+                if (R_SUCCEEDED(rc)) rc=song_save_shuffle(&sd,song_menu_directory(menu),false);
                 if (R_FAILED(rc)) snprintf(message,sizeof message,"Could not save the selection to SD.");
                 else {
                     shuffle=false; pending_toggle=false;
                     strcpy(pending_name,songs[cursor]);
+                    reload_menu=(u32)menu;
                     if (!serviceIsActive(&plugin)) open_plugin(&plugin);
-                    if (serviceIsActive(&plugin)) rc=serviceDispatchOut(&plugin,MusicCommand_Reload,request);
+                    if (serviceIsActive(&plugin)) rc=serviceDispatchInOut(&plugin,MusicCommand_Reload,reload_menu,request);
                     else rc=MAKERESULT(Module_Libnx,LibnxError_NotFound);
                     if (R_SUCCEEDED(rc)) { waiting=true; poll_ticks=0; }
                     else {
@@ -173,7 +186,8 @@ int main(void) {
                 waiting=false; dirty=true;
                 if (R_SUCCEEDED(state.result)) {
                     strcpy(selected,pending_name);
-                    snprintf(message,sizeof message,"%s",pending_toggle ? (shuffle ? "Shuffle on. Songs change automatically." : "Shuffle off. Selected song will repeat.") : "Selected. Return to HOME to listen.");
+                    if (pending_toggle) snprintf(message,sizeof message,"%s",shuffle ? "Shuffle on. Songs change automatically." : "Shuffle off. Selected song will repeat.");
+                    else snprintf(message,sizeof message,"Selected. Open %s to listen.",music_menus[menu].label);
                 } else snprintf(message,sizeof message,"Could not load this song. Choose another WAV.");
             }
             poll_ticks=6;

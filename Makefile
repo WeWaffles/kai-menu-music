@@ -20,10 +20,10 @@ all: $(TARGET).nso $(TARGET)-selector.nro
 $(BUILD):
 	mkdir -p $@
 
-$(BUILD)/%.o: source/%.c source/core.h source/songs.h source/control.h | $(BUILD)
+$(BUILD)/%.o: source/%.c source/core.h source/songs.h source/control.h source/diagnostics.h | $(BUILD)
 	$(PREFIX)gcc $(CFLAGS) -c $< -o $@
 
-$(BUILD)/$(TARGET).elf: $(BUILD)/main.o $(BUILD)/core.o $(BUILD)/songs.o
+$(BUILD)/$(TARGET).elf: $(BUILD)/main.o $(BUILD)/core.o $(BUILD)/songs.o $(BUILD)/diagnostics.o
 	$(PREFIX)gcc $(LDFLAGS) $^ $(LIBS) -o $@
 
 $(TARGET).nso: $(BUILD)/$(TARGET).elf
@@ -33,7 +33,7 @@ $(BUILD)/selector.elf: $(BUILD)/selector.o $(BUILD)/core.o $(BUILD)/songs.o
 	$(PREFIX)gcc $(LDFLAGS) $^ $(LIBS) -o $@
 
 $(BUILD)/selector.nacp: Makefile | $(BUILD)
-	$(DEVKITPRO)/tools/bin/nacptool --create "Menu Music" "WeWaffles" "1.1.0" $@
+	$(DEVKITPRO)/tools/bin/nacptool --create "Menu Music" "WeWaffles" "1.2.0" $@
 
 $(TARGET)-selector.nro: $(BUILD)/selector.elf $(BUILD)/selector.nacp
 	$(DEVKITPRO)/tools/bin/elf2nro $< $@ --nacp=$(BUILD)/selector.nacp

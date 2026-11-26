@@ -40,7 +40,12 @@ Result fsFileWrite(FsFile *f,s64 off,const void *input,u64 length,unsigned optio
  writes++;return 0;
 }
 Result fsFsGetEntryType(FsFileSystem *sd,const char *path,FsDirEntryType *type){(void)sd;if((!strcmp(path,MUSIC_DIRECTORY "/a.wav")&&have_a)||(!strcmp(path,MUSIC_DIRECTORY "/b.wav")&&have_b)){*type=FsDirEntryType_File;return 0;}return 0x202;}
-Result fsFsOpenDirectory(FsFileSystem *sd,const char *path,unsigned mode,FsDir *dir){(void)sd;assert(!strcmp(path,MUSIC_DIRECTORY)&&mode==FsDirOpenMode_ReadFiles);dir->cursor=0;return 0;}
+static bool have_settings;
+Result fsFsOpenDirectory(FsFileSystem *sd,const char *path,unsigned mode,FsDir *dir){
+ (void)sd;assert(mode==FsDirOpenMode_ReadFiles);
+ if(!strcmp(path,MUSIC_DIRECTORY "/settings")){if(!have_settings)return 0x202;dir->cursor=0;return 0;}
+ if(!strcmp(path,MUSIC_DIRECTORY "/gameshare"))return 0x202;
+ assert(!strcmp(path,MUSIC_DIRECTORY));dir->cursor=0;return 0;}
 Result fsDirRead(FsDir *dir,s64 *count,s64 capacity,FsDirectoryEntry *entry){
  static const char *names[]={"b.wav","._hidden.wav","a.wav","broken.wav","notes.txt"};assert(capacity==1);
  while(dir->cursor<5){const char *name=names[dir->cursor++];if((!have_b&&!strcmp(name,"b.wav"))||(!have_a&&!strcmp(name,"a.wav")))continue;strcpy(entry->name,name);*count=1;return 0;}
@@ -49,28 +54,36 @@ Result fsDirRead(FsDir *dir,s64 *count,s64 capacity,FsDirectoryEntry *entry){
 void fsDirClose(FsDir *dir){(void)dir;}
 static uint32_t random_zero(void *context){(void)context;return 0;}
 int main(void){
- FsFileSystem sd={0};char path[FS_MAX_PATH],name[FS_MAX_PATH];Wave wave;
- assert(!song_resolve(&sd,NULL,path,name)&&!strcmp(name,"a.wav"));
- assert(!song_save_selection(&sd,"b.wav")&&writes==1);
- assert(!song_resolve(&sd,NULL,path,name)&&!strcmp(name,"b.wav"));
- assert(!song_validate(&sd,name,&wave)&&wave.offset==44&&wave.size==4);
- have_b=false;assert(!song_resolve(&sd,NULL,path,name)&&!strcmp(name,"a.wav"));
+ FsFileSystem sd={0};char path[FS_MAX_PATH],name[FS_MAX_PATH];Wave wave;const char *D=MUSIC_DIRECTORY;
+ for(int i=0;i<MENU_COUNT;i++){const char *dir=song_menu_directory(i);size_t n=strlen(dir),k=strlen(music_menus[i].key);
+  assert(i==MENU_HOME?!strcmp(dir,MUSIC_DIRECTORY):n>k&&!strcmp(dir+n-k,music_menus[i].key)&&dir[n-k-1]=='/'&&!strncmp(dir,MUSIC_DIRECTORY "/",sizeof MUSIC_DIRECTORY));}
+ assert(!song_menu_directory(MENU_COUNT)&&!song_menu_directory(MENU_NONE));
+ assert(song_menu_playlist(&sd,MENU_HOME)==MENU_HOME&&song_menu_playlist(&sd,MENU_NONE)==MENU_NONE);
+ assert(song_menu_playlist(&sd,2)==MENU_HOME); // missing folder: HOME music
+ assert(song_menu_playlist(&sd,1)==MENU_HOME); have_settings=true;
+ assert(song_menu_playlist(&sd,1)==1); // folder holding a WAV: its own playlist
+ assert(song_resolve(&sd,NULL,NULL,path,name)!=0&&song_read_shuffle(&sd,NULL,&(bool){0})!=0&&song_save_shuffle(&sd,NULL,true)!=0);
+ assert(!song_resolve(&sd,D,NULL,path,name)&&!strcmp(name,"a.wav"));
+ assert(!song_save_selection(&sd,D,"b.wav")&&writes==1);
+ assert(!song_resolve(&sd,D,NULL,path,name)&&!strcmp(name,"b.wav"));
+ assert(!song_validate(&sd,D,name,&wave)&&wave.offset==44&&wave.size==4);
+ have_b=false;assert(!song_resolve(&sd,D,NULL,path,name)&&!strcmp(name,"a.wav"));
  strcpy(setting,"../escape.wav\n");setting_size=strlen(setting);
- assert(!song_resolve(&sd,NULL,path,name)&&!strcmp(name,"a.wav"));
- assert(song_save_selection(&sd,"../escape.wav")!=0&&writes==1);
- assert(!song_save_selection(&sd,"a.wav")&&writes==2);
- assert(!song_read_selection(&sd,name)&&!strcmp(name,"a.wav"));
+ assert(!song_resolve(&sd,D,NULL,path,name)&&!strcmp(name,"a.wav"));
+ assert(song_save_selection(&sd,D,"../escape.wav")!=0&&writes==1);
+ assert(!song_save_selection(&sd,D,"a.wav")&&writes==2);
+ assert(!song_read_selection(&sd,D,name)&&!strcmp(name,"a.wav"));
  bool enabled=true;
- assert(song_read_shuffle(&sd,&enabled)!=0&&!enabled);
- assert(!song_save_shuffle(&sd,true));assert(!song_read_shuffle(&sd,&enabled)&&enabled);
- assert(!song_save_shuffle(&sd,false));assert(!song_read_shuffle(&sd,&enabled)&&!enabled);
+ assert(song_read_shuffle(&sd,D,&enabled)!=0&&!enabled);
+ assert(!song_save_shuffle(&sd,D,true));assert(!song_read_shuffle(&sd,D,&enabled)&&enabled);
+ assert(!song_save_shuffle(&sd,D,false));assert(!song_read_shuffle(&sd,D,&enabled)&&!enabled);
  have_b=true;
- assert(!song_choose_shuffle(&sd,"a.wav",random_zero,NULL,name)&&!strcmp(name,"b.wav"));
- assert(!song_choose_shuffle(&sd,"b.wav",random_zero,NULL,name)&&!strcmp(name,"a.wav"));
+ assert(!song_choose_shuffle(&sd,D,"a.wav",random_zero,NULL,name)&&!strcmp(name,"b.wav"));
+ assert(!song_choose_shuffle(&sd,D,"b.wav",random_zero,NULL,name)&&!strcmp(name,"a.wav"));
  have_b=false;
- assert(!song_choose_shuffle(&sd,"a.wav",random_zero,NULL,name)&&!strcmp(name,"a.wav"));
+ assert(!song_choose_shuffle(&sd,D,"a.wav",random_zero,NULL,name)&&!strcmp(name,"a.wav"));
  have_a=false;
- assert(song_choose_shuffle(&sd,"a.wav",random_zero,NULL,name)!=0);
+ assert(song_choose_shuffle(&sd,D,"a.wav",random_zero,NULL,name)!=0);
  assert(opens==closes);
- puts("Selection persistence, missing-song fallback and streamed validation checks passed");
+ puts("Selection persistence, menu folders, missing-song fallback and streamed validation checks passed");
 }
