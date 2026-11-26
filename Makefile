@@ -33,7 +33,7 @@ $(BUILD)/selector.elf: $(BUILD)/selector.o $(BUILD)/core.o $(BUILD)/songs.o
 	$(PREFIX)gcc $(LDFLAGS) $^ $(LIBS) -o $@
 
 $(BUILD)/selector.nacp: Makefile | $(BUILD)
-	$(DEVKITPRO)/tools/bin/nacptool --create "Menu Music" "WeWaffles" "1.1.0" $@
+	$(DEVKITPRO)/tools/bin/nacptool --create "Menu Music" "WeWaffles" "1.2.0" $@
 
 $(TARGET)-selector.nro: $(BUILD)/selector.elf $(BUILD)/selector.nacp
 	$(DEVKITPRO)/tools/bin/elf2nro $< $@ --nacp=$(BUILD)/selector.nacp

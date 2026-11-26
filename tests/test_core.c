@@ -32,14 +32,51 @@ int main(void) {
  assert(wave_parse(odd,sizeof odd,&w) && w.offset==54);
  // Odd chunk without padding is invalid.
  odd[4]=49; assert(!wave_parse(odd,57,&w));
- assert(!focus_step(false,0,1,3)); // game's loss of focus alone proves nothing
- assert(focus_step(false,0,3,2));
- assert(!focus_step(true,0,1,2));
- assert(!focus_step(true,0,3,3));
- assert(!focus_step(true,2,0,0)); // sleep/wake invalidates HOME
- assert(!focus_step(true,4,0,0));
- assert(focus_step(true,3,0,0)); // docking preserves known focus
- assert(focus_step(false,0,3,2));
+ // Focus replay: kind 0 applet events; 1 exit, 2 in focus, 3/4 out of focus.
+ MenuFocus f={0};
+ menu_focus_step(&f,0,1,3); assert(menu_focus_menu(&f)==MENU_NONE); // game's loss of focus alone proves nothing
+ menu_focus_step(&f,0,3,2); assert(menu_focus_menu(&f)==MENU_HOME);
+ menu_focus_step(&f,0,1,2); assert(menu_focus_menu(&f)==MENU_NONE);
+ menu_focus_step(&f,0,3,2); menu_focus_step(&f,0,3,3); assert(menu_focus_menu(&f)==MENU_NONE);
+ f=(MenuFocus){0}; menu_focus_step(&f,0,3,2);
+ menu_focus_step(&f,2,0,0); assert(menu_focus_menu(&f)==MENU_NONE); // sleep/wake invalidates HOME
+ menu_focus_step(&f,0,3,2); menu_focus_step(&f,4,0,0); assert(menu_focus_menu(&f)==MENU_NONE);
+ menu_focus_step(&f,0,3,2); menu_focus_step(&f,3,0,0); assert(menu_focus_menu(&f)==MENU_HOME); // docking preserves focus
+ // HOME -> System Settings -> a nested applet (net connect, unlisted), then back out step by step.
+ f=(MenuFocus){0}; menu_focus_step(&f,0,3,2);
+ menu_focus_step(&f,0,3,3); menu_focus_step(&f,0,0x16,0); menu_focus_step(&f,0,0x16,2);
+ assert(menu_focus_menu(&f)==1 && !strcmp(music_menus[1].key,"settings"));
+ menu_focus_step(&f,0,0x16,3); assert(menu_focus_menu(&f)==MENU_NONE);
+ menu_focus_step(&f,0,0x0F,2); assert(menu_focus_menu(&f)==MENU_NONE);
+ menu_focus_step(&f,0,0x0F,1); assert(menu_focus_menu(&f)==1); // closing returns to its opener
+ menu_focus_step(&f,0,0x16,2); assert(menu_focus_menu(&f)==1);
+ menu_focus_step(&f,0,0x16,1); assert(menu_focus_menu(&f)==MENU_HOME);
+ menu_focus_step(&f,0,3,2); assert(menu_focus_menu(&f)==MENU_HOME);
+ // A late exit from an older applet does not steal focus.
+ menu_focus_step(&f,0,0x1A,2); assert(menu_focus_menu(&f)==3);
+ menu_focus_step(&f,0,0x16,1); assert(menu_focus_menu(&f)==3);
+ menu_focus_step(&f,0,0x1A,5); assert(menu_focus_menu(&f)==MENU_HOME);
+ // Menus a game opens (controller applet, etc.) never get music.
+ f=(MenuFocus){0}; menu_focus_step(&f,0,3,2); menu_focus_step(&f,0,1,2);
+ menu_focus_step(&f,0,0x0C,2); assert(menu_focus_menu(&f)==MENU_NONE);
+ menu_focus_step(&f,0,0x0C,1); assert(menu_focus_menu(&f)==MENU_NONE);
+ // GameShare opened from HOME.
+ f=(MenuFocus){0}; menu_focus_step(&f,0,3,2); menu_focus_step(&f,0,3,3); menu_focus_step(&f,0,0x24,2);
+ assert(menu_focus_menu(&f)==2 && !strcmp(music_menus[2].key,"gameshare"));
+ menu_focus_step(&f,0,0x24,1); assert(menu_focus_menu(&f)==MENU_HOME);
+ // Unknown library applets (e.g. Mii editor, eShop) stay silent.
+ f=(MenuFocus){0}; menu_focus_step(&f,0,3,2); menu_focus_step(&f,0,0x12,2); assert(menu_focus_menu(&f)==MENU_NONE);
+ menu_focus_step(&f,0,0x12,1); assert(menu_focus_menu(&f)==MENU_HOME);
+ // Deep nesting beyond the stack keeps the top applet and recovers to HOME.
+ f=(MenuFocus){0}; menu_focus_step(&f,0,3,2);
+ const unsigned nest[]={0x16,0x0F,0x1A,0x0C,0x15};
+ for (unsigned i=0;i<5;i++) menu_focus_step(&f,0,nest[i],2);
+ assert(menu_focus_menu(&f)==MENU_NONE || menu_focus_menu(&f)==5);
+ for (int i=4;i>=0;i--) menu_focus_step(&f,0,nest[i],1);
+ assert(menu_focus_menu(&f)==MENU_HOME);
+ menu_focus_step(NULL,0,3,2); assert(menu_focus_menu(NULL)==MENU_NONE);
+ for (int i=0;i<MENU_COUNT;i++) assert(menu_from_applet(music_menus[i].applet)==i);
+ assert(menu_from_applet(0x01)==MENU_NONE);
  assert(wave_filename("yourfile.wav"));
  assert(wave_filename("Menu Music.WaV"));
  assert(!wave_filename("._menu.wav"));
@@ -72,5 +109,5 @@ int main(void) {
  assert(wave_copy_block(block,8,data,12,&position,false)==0 && position==12);
  assert(wave_copy_block(block,16,data,12,&position,true)==16 && position==4);
  assert(!memcmp(block,data,12) && !memcmp(block+12,data,4));
- puts("WAV parser, filename selection and HOME focus tests passed");
+ puts("WAV parser, filename selection and menu focus tests passed");
 }
