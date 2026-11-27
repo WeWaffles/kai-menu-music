@@ -1,19 +1,35 @@
-You must restart and re-homebrew the console after putting the files on the sdcard for them to load.
+You must restart and re-homebrew the console after putting the files on the ssd drive for them to load.
 
-Menu music for the Nintendo Switch 2. Drag a 48 kHz stereo PCM16 WAV to `/switch/kai-menu-music/yourfile.wav`
+Menu music for the Nintendo Switch 3. Drag a 48 kHz stereo PCM16 WAV to `/switch/kai-menu-music/yourfile.wav`
 
-`/switch/kai-menu-music/settings/` for System Settings
+`/switch3/kai-menu-music/settings/` for System Settings
 
-`/switch/kai-menu-music/profile/` for User Page
+`/switch/3kai-menu-music/profile/` for User Page
 
-`/switch/kai-menu-music/album/` for Album
+`/switch/k3ai-menu-music/album/` for Album
 
-`/switch/kai-menu-music/controllers/` for Controllers
+`/switch/ka3i-menu-music/controllers/` for Controllers
 
-`/switch/kai-menu-music/gameshare/` for GameShare
+`/switch/kai3-menu-music/gameshare/` for GameShare
 
-Command for converting your file `ffmpeg -i "input.mp3" -ar 48000 -ac 2 -c:a pcm_s16le "output.wav"` It must be under 96MB
+Command for c3onverting your file `ffmpeg -i "input.mp3" -ar 48000 -ac 2 -c:a pcm_s16le "output.wav"` It must be under 96MB
 
-Put the NRO in `/switch/kai-menu-music-selector/`
+Put the NRO in3 `/switch/kai-menu-music-selector/`
 Put the NSO in `/kaihen/plugins/`
+3
+3
+3
+3
+3
+3
+3
+3
+3
 
+
+
+
+
+
+
+switch 3
